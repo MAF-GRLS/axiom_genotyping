@@ -1,6 +1,29 @@
 mkdir -p MAF && cd MAF
 work_dir=$(pwd)
-## Download from Google cloud
+
+## Prepare genomic resources
+## get the referenece genome
+genome_dir=$work_dir/refGenome
+mkdir -p $genome_dir && cd $genome_dir
+wget --timestamping 'ftp://hgdownload.cse.ucsc.edu/goldenPath/canFam3/bigZips/canFam3.fa.gz' -O canFam3.fa.gz
+gunzip canFam3.fa.gz
+# chromosome Y was identified by blasting the flanking sequences. The target sequence was obtained from the GenBank: https://www.ncbi.nlm.nih.gov/nuccore/KP081776.1
+# Local: cp CF_y.fasta tahmed@farm.cse.ucdavis.edu:/home/tahmed/MAF/refGenome/.
+(echo ">chrY" && tail -n+2 CF_y.fasta) >> canFam3.fa
+canFam3_ref="$genome_dir"/canFam3.fa
+
+cat $canFam3_ref | awk '/^>/{print s? s"\n"$0:$0;s="";next}{s=s sprintf("%s",$0)}END{if(s)print s}' > $genome_dir/canFam3_unwrap.fa
+canFam3_ref_unwrap=$genome_dir/canFam3_unwrap.fa
+
+#conda create -n ngs
+conda activate ngs
+conda install -c bioconda bwa
+
+mkdir -p $genome_dir/bwaIndex && cd $genome_dir/bwaIndex
+ln -s $canFam3_ref_unwrap .
+bwa index -a bwtsw canFam3_unwrap.fa
+
+## Download genotyping CEL files from Google cloud
 #You can access the bucket via this URL:
 #https://console.cloud.google.com/storage/browser/entirecohortinfo.
 conda update conda
@@ -128,15 +151,8 @@ cat sample_ped_infoB_cohort.txt | cut -f3 | sort > b3.txt
 diff a3.txt b3.txt
 rm a3.txt b3.txt
 
-## create map files for CEL file names and sample IDs
-echo "Sample Filename|Alternate Sample Name" | tr '|' '\t' > infoA_names.txt
-tail -n+2 sample_ped_infoA_cohort.txt | awk 'BEGIN{FS=OFS="\t"}{print $1,"S"$3}' >> infoA_names.txt
-
-echo "Sample Filename|Alternate Sample Name" | tr '|' '\t' > infoB_names.txt
-tail -n+2 sample_ped_infoB_cohort.txt | awk 'BEGIN{FS=OFS="\t"}{print $1,"S"$3}' >> infoB_names.txt
-
-## find sample name duplicates
-tail -n+2 infoA_names.txt | cut -f2 | cut -d"_" -f1 | sort | uniq -c | awk '{if($1>1)print $2}' | while read f;do echo $(grep "$f" infoA_names.txt | cut -f2 | tr '\n' '\t');done > sample_dup.txt
+## find sample name duplicates (We can use any one of the arrays ped files)
+tail -n+2 sample_ped_infoA_cohort.txt | cut -f3 | cut -d"_" -f1 | sort | uniq -c | awk '{if($1>1)print $2}' | while read f;do echo $(grep "$f" sample_ped_infoA_cohort.txt | awk -F"\t" '{print "S"$3}' | tr '\n' '\t');done > sample_dup.txt
 
 ## compare gender across info files
 awk 'BEGIN{FS=OFS="\t"}FNR==NR{a[$3]=$6;next}{print $3,a[$3],$6}' sample_ped_infoA_cohort.txt sample_ped_infoB_cohort.txt | sed 's/Sex/sexA/' | sed 's/Sex/sexB/' > gender_compare.txt
@@ -194,6 +210,7 @@ genotype2_xml="$set_Analysis"/Axiom_K9HDSNPA_96orMore_Step2.r1.apt-genotype-axio
 specialSNPs="$set_Analysis"/Axiom_K9HDSNPA.r1.specialSNPs
 ps2snp="$set_Analysis"/Axiom_K9HDSNPA.r1.ps2snp_map.ps
 annot_db="$set_Analysis"/../Axiom_K9HDSNPA.r1_3.20160810.annot.db
+annot_csv="$set_Analysis"/../Axiom_K9HDSNPA_Annotation.r1_3.csv
 pedInfo=$work_dir/pedigree/sample_ped_infoA_cohort.txt
 
 ## Array_B
@@ -207,6 +224,7 @@ genotype2_xml="$set_Analysis"/Axiom_K9HDSNPB_96orMore_Step2.r1.apt-genotype-axio
 specialSNPs="$set_Analysis"/Axiom_K9HDSNPB.r1.specialSNPs #"$set_Analysis"/Axiom_K9HDSNPA.r1.specialSNPs
 ps2snp="$set_Analysis"/Axiom_K9HDSNPB.r1.ps2snp_map.ps #"$set_Analysis"/Axiom_K9HDSNPA.r1.ps2snp_map.ps
 annot_db="$set_Analysis"/../Axiom_K9HDSNPB.r1_3.20160810.annot.db #"$set_Analysis"/../Axiom_K9HDSNPA.r1_3.20160810.annot.db
+annot_csv="$set_Analysis"/../Axiom_K9HDSNPB_Annotation.r1_3.csv
 pedInfo=$work_dir/pedigree/sample_ped_infoB_cohort.txt #$work_dir/pedigree/sample_ped_infoA_cohort.txt
 
 ##########
@@ -331,43 +349,213 @@ $apt/ps-classification\
 ## Array_B ## 548289 output/setB/SNPolisher/Recommended.ps
 
 ## Export
+## create map files for CEL file names and sample IDs
+echo "Sample Filename|Alternate Sample Name" | tr '|' '\t' > "$set_output"/info_names.txt
+tail -n+2 "$pedInfo" | awk 'BEGIN{FS=OFS="\t"}{print $1,"S"$3}' >> "$set_output"/info_names.txt
+
 $apt/apt-format-result \
       --calls-file "$set_output"/step2/AxiomGT1.calls.txt \
       --snp-list-file "$set_output"/SNPolisher/Recommended.ps \
-      --annotation-file lib/setA/Axiom_K9HDSNPA.r1_3.20160810.annot.db \
+      --annotation-file "$annot_db" \
       --snp-identifier-column Affy_SNP_ID \
       --export-chr-shortname true \
       --export-vcf-file "$set_output"/export/AxiomGT1.vcf \
-      --log-file "$set_output"/export/AxiomGT1_to_vcf.log
-      
-      
-########
-########
-## Example for seting up an interactive session on Farm
-srun -p bmm -t 03-00:00:00 -c 16 -n 1 -N 1 --mem=128000 --job-name "jobName" --pty bash
-apt=$work_dir/"apt_2.11.6_linux_64_x86_binaries/bin/"
-########
-## Example for ps-extract then export
-mkdir -p example/subSample
-head -n10 "$set_output"/SNPolisher/Recommended.ps > example/subSample/Recommended.ps
-echo "sample_list a550771-4434579-040223-600_A02.CEL" | tr ' ' '\n' > example/subSample/samples.txt
-echo "Sample Filename|Alternate Sample Name" | tr '|' '\t' > example/subSample/samples_att.txt
-echo "a550771-4434579-040223-600_A02.CEL|sample_1" | tr '|' '\t' >> example/subSample/samples_att.txt
-
-$apt/ps-extract \
-     --call-file "$set_output"/step2/AxiomGT1.calls.txt \
-     --pid-file ./example/subSample/Recommended.ps \
-     --sample-list-file ./example/subSample/samples.txt \
-     --output-dir ./example/subSample_output
-
-$apt/apt-format-result \
-      --calls-file ./example/subSample_output/extract_calls.txt \
-      --snp-list-file ./example/subSample/Recommended.ps \
-      --annotation-file lib/setA/Axiom_K9HDSNPA.r1_3.20160810.annot.db \
-      --snp-identifier-column Affy_SNP_ID \
-      --export-chr-shortname true \
-      --export-vcf-file ./example/subSample_output/export/AxiomGT1.vcf \
-      --log-file ./example/subSample_output/export/AxiomGT1_to_vcf.log \
+      --log-file "$set_output"/export/AxiomGT1_to_vcf.log \
       --export-alternate-sample-names true \
-      --sample-attributes-file ./example/subSample/samples_att.txt
+      --sample-attributes-file "$set_output"/info_names.txt
 
+wc -l "$set_output"/SNPolisher/Recommended.ps ## 401494 // 548289
+grep -v "^#" $set_output/export/AxiomGT1.vcf | wc -l  ## 401493 // 548288
+
+
+cd "$set_output"/export/
+## QC for SNPs without ref/alt
+## extract all SNPs without ref/alt & select those among recommended
+#grep -v "^#" $annot_csv | sed 's/^"//;s/\",\"/|/g;s/"$//;' | awk -F"|" '{if($19=="---")print}' > noREF.csv
+grep -Fwf "$set_output"/SNPolisher/Recommended.ps <(grep -v "^#" $annot_csv | sed 's/^"//;s/\",\"/|/g;s/"$//;' | awk -F"|" '{if($19=="---")print}') > noREF_rec.csv #1409 // 0
+cat noREF_rec.csv | cut -d"|" -f4 | sort | uniq -c > noREF_rec.chr ## arrA (704 Unknown, 421 Unplaced contigs, 177Y, 25X, 82 all other chr)
+## Split into variants with known Chr/Pos and variants without
+cat noREF_rec.csv | awk -F"|" '{if($4!="---" && $5!="---")print}' > noREF_rec_known.csv
+cat noREF_rec.csv | awk -F"|" '{if($4=="---" || $5=="---")print}' > noREF_rec_unknown.csv
+## known: Fix chr symbol THEN prepare possible alleles & haplotypes THEN sort by chromosome
+cat noREF_rec_known.csv | awk 'BEGIN{FS="|";OFS="\t"}{if($4=="Un"){z=$15;sub(/^{/,"",z);split(z,a,"_");$4=a[1]"_"a[2];}else if($4=="MT")$4="chrM";else $4="chr"$4;print $2,$4,$5,$6,$7}' | tr '[/]' '\t\t\t' | awk 'BEGIN{FS=OFS="\t"}{if($6=="-"){$6="";a1=substr($5,length($5));a2=a1$7;} else{a1=$6;a2=$7}print $1,$2,$3,$4,a1,a2,length($5),$5$6$8,$5$7$8}' | sort -k2,2 > noREF_rec_knownCor.tab ## 704
+## Unknown: prepare possible alleles & haplotypes
+cat noREF_rec_unknown.csv | awk 'BEGIN{FS="|";OFS="\t"}{print $2,$4,$5,$6,$7}' | tr '[/]' '\t\t\t' | awk 'BEGIN{FS=OFS="\t"}{if($6=="-"){$6="";a1=substr($5,length($5));a2=a1$7;} else{a1=$6;a2=$7}print $1,$2,$3,$4,a1,a2,length($5),$5$6$8,$5$7$8}' > noREF_rec_unknownCor.tab ## 705 (This must include the variant that already failed to export to VCF)
+## Prep fasta files
+cat noREF_rec_knownCor.tab noREF_rec_unknownCor.tab | awk 'BEGIN{FS="\t";OFS="\n";}{print ">"$1":a1",$8,">"$1":a2",$9}' > noREF_rec_knownCor.fa
+
+## align by BWA
+bwa mem $genome_dir/bwaIndex/canFam3_unwrap.fa noREF_rec_knownCor.fa > noREF_rec_knownCor.sam
+grep -v "^@" noREF_rec_knownCor.sam | awk -F"\t" '{if($12=="NM:i:0")print $1}' > temp.align
+cat temp.align | tr ':' '\t' | cut -f1 | sort | uniq -c | awk '{if($1=="1")print $2}' | grep -Fwf - temp.align | grep -Fwf - noREF_rec_knownCor.sam > noREF_rec_knownCor.uniq.sam ## 687
+cat noREF_rec_knownCor.uniq.sam | awk '{if($5>=45)print}' > noREF_rec_knownCor.sig.sam ## 425 (204 Unplaced contigs, 171Y, 24X, 26 all other chr)
+
+
+## Update the VCF chromosomes to match canFam3
+# change 1,2,3,.....X,Y to chr1,chr2,...... chrY
+# change MT to chrM
+# change Un to chrUn_xxxxxxx
+# ?remove UNKNOWNCHR
+grep -v "^#" AxiomGT1.vcf | cut -f1 | uniq -c > chr.lst
+
+for x in {1..38} X Y;do echo $x chr$x | tr ' ' '\t';done > allChr.map
+echo MT chrM | tr ' ' '\t' >> allChr.map
+for x in {1..38} X Y M;do echo "##contig=<ID=chr$x>";done > contig_ids
+
+grep "chrUn_" $annot_csv | sed 's/^"//;s/\",\"/|/g;s/"$//;' | cut -d"|" -f2,15 | sed 's/{//' | cut -d"_" -f1,2 | tr '|' '\t' > chrUn.map
+grep "^Un" AxiomGT1.vcf | cut -f3 | grep -Fwf - chrUn.map > chrUn.map.found
+cat chrUn.map.found >> allChr.map
+cat chrUn.map.found | cut -f2 | sort | uniq | while read f;do echo "##contig=<ID=$f>";done >> contig_ids
+
+cat AxiomGT1.vcf | awk -v file=contig_ids 'BEGIN{contig=1;}/^##[^contig]/{print}/^##contig/{if(contig){while((getline<file) > 0)print;contig=0;}}/^#CH/{print}!/^#/{exit}' > AxiomGT1v2.vcf
+awk 'BEGIN{FS=OFS="\t"}FNR==NR{a[$1]=$2;next}!/#/{if(a[$1]){$1=a[$1];print}else if(a[$3]){$1=a[$3];print}}' allChr.map AxiomGT1.vcf >> AxiomGT1v2.vcf ## 400789 // 548288
+
+grep -v "^#" AxiomGT1v2.vcf | cut -f1 | uniq -c > chrv2.lst
+
+
+#conda create -n equineSNP
+conda activate equineSNP
+conda install -c bioconda plink
+conda install -c bioconda plink2
+conda install -c bioconda bcftools
+conda install -c bioconda eigensoft
+conda install -c bioconda vcftools
+
+
+## check the VCF integrity
+conda activate equineSNP
+bcftools sort -o AxiomGT1v2_sorted.vcf AxiomGT1v2.vcf
+bcftools norm -c ws -f $canFam3_ref_unwrap AxiomGT1v2_sorted.vcf 1> AxiomGT1v2.check.vcf 2> AxiomGT1v2.check.log
+# Array A
+#Lines   total/split/realigned/skipped:  400789/0/141/0
+#REF/ALT total/modified/added:   400789/112/1191
+# Array B
+#Lines   total/split/realigned/skipped:  548288/0/0/0
+#REF/ALT total/modified/added:   548288/0/0
+
+diff <(grep "^#" AxiomGT1v2.vcf) <(grep "^#" AxiomGT1v2.check.vcf) > check.dif
+diff <(grep -v "^#" AxiomGT1v2.vcf | cut -f1-5) <(grep -v "^#" AxiomGT1v2.check.vcf | cut -f1-5) > check.dif2
+cat check.dif2 | grep "^[<>]" | sort -k2,3 -k1,1 > check.dif2.sorted
+cat check.dif2.sorted | cut -f2-  | uniq | cut -f2 | uniq -c | awk '{if($1==2)print $2}' | grep -Fwf - check.dif2.sorted > check.dif2.sorted.uniq
+cat check.dif2.sorted.uniq | cut -d" " -f2 | paste - - | awk 'BEGIN{FS=OFS="\t"}{print $1,$2,$3,$4,$5,$9,$10}' > check.dif.map
+cat check.dif.map | awk 'BEGIN{FS=OFS="\t"}{if($4==$7 && $5==$6)print}' | wc -l ## 112
+cat check.dif.map | awk 'BEGIN{FS=OFS="\t"}{if($4=="N" && $5==".")print}' | wc -l ## 700
+cat check.dif.map | awk 'BEGIN{FS=OFS="\t"}{if($4!="N" && $4!=$7)print}' | wc -l ## 491
+
+
+## Exclude variants without known ref/alt alleles
+#grep -v "^#" AxiomGT1v2.vcf | awk 'BEGIN{FS=OFS="\t"}{if($4=="N")print $1,$2}' > noPos.lst ## 705
+grep -v "^#" AxiomGT1v2.vcf | awk 'BEGIN{FS=OFS="\t"}{if($4=="N")print $3}' > noPos.lst ## 705
+## Exclude variants with annotation errors
+#cat check.dif.map | awk 'BEGIN{FS=OFS="\t"}{if($4!="N" && $4!=$7)print $1,$2}' > annError.lst ## 491
+cat check.dif.map | awk 'BEGIN{FS=OFS="\t"}{if($4!="N" && $4!=$7)print $3}' > annError.lst ## 491
+
+#vcftools --vcf AxiomGT1v2.check.vcf --exclude-positions <(cat noPos.lst annError.lst) --recode --out AxiomGT1v2.hiQ
+cat noPos.lst annError.lst | grep -vFwf - AxiomGT1v2.check.vcf > AxiomGT1v2.hiQ.vcf
+grep -v "^#" AxiomGT1v2.hiQ.vcf | wc -l ## 399593 // 548288
+
+
+
+## There are different SNPs with the same position on the same array
+## Keep one of them which has higher genotyping rate
+#grep -v "^#" AxiomGT1v2.hiQ.vcf | awk '{print $3}' | sort > ids.lst
+grep -v "^#" AxiomGT1v2.hiQ.vcf | awk '{print $1"_"$2}' | sort > pos.lst
+cat pos.lst | uniq -c | awk '{if($1>1)print $2}' > pos_dup.lst # 2862 // 0
+cat pos.lst | uniq -c | awk '{if($1>2)print $2}' ## Not more than 2 IDs per position
+awk -F"\t" 'FNR==NR{a[$1]=1;next}{if(a[$1"_"$2])print}' pos_dup.lst AxiomGT1v2.hiQ.vcf | cut -f1,2 | paste - - | awk '{if($1!=$3 || $2!=$4)print}' ## nothing (safe to paste)
+echo "CHROM POS ID1 NS1 MAF1 AC_Het1 AC_Hom1 ExcHet1 ID2 NS2 MAF2 AC_Het2 AC_Hom2 ExcHet2" | tr ' '  '\t' > pos_dup.ann
+awk -F"\t" 'FNR==NR{a[$1]=1;next}/^#/{print}{if(a[$1"_"$2])print}' pos_dup.lst AxiomGT1v2.hiQ.vcf | bcftools +fill-tags | bcftools query -f'%CHROM\t%POS\t%ID\t%NS\t%MAF\t%AC_Het\t%AC_Hom\t%ExcHet\n' | paste - - | cut -f1-8,11-16 >> pos_dup.ann #pos_dup.vcf
+tail -n+2 pos_dup.ann | awk -F"\t" '{if($4<$10)print $3;else print $9}' > pos_dup_ToExclude.lst ## 2862 // 0
+cat pos_dup_ToExclude.lst | grep -vFwf - AxiomGT1v2.hiQ.vcf > AxiomGT1v2.hiQ2.vcf
+grep -v "^#" AxiomGT1v2.hiQ2.vcf | awk '{print $1"_"$2}' | sort > pos2.lst
+
+
+########
+cd $work_dir
+grep "^#CHROM" output/setA/export/AxiomGT1.vcf | tr '\t' '\n' | tail -n+10 > A.samples
+grep "^#CHROM" output/setB/export/AxiomGT1.vcf | tr '\t' '\n' | tail -n+10 > B.samples
+comm -12 <(sort A.samples) <(sort B.samples) > shared.samples ## 3146
+comm -13 <(sort A.samples) <(sort B.samples) > Bonly.samples ## 1
+comm -23 <(sort A.samples) <(sort B.samples) > Aonly.samples ## 17
+
+## Assess duplicates and genotype concordance
+comm -12 output/set[AB]/export/pos2.lst > dup_pos # 31083
+awk -F"\t" 'FNR==NR{a[$1]=1;next}/^#/{print}{if(a[$1"_"$2])print}' dup_pos output/setA/export/AxiomGT1v2.hiQ2.vcf > dup_A.vcf
+awk -F"\t" 'FNR==NR{a[$1]=1;next}/^#/{print}{if(a[$1"_"$2])print}' dup_pos output/setB/export/AxiomGT1v2.hiQ2.vcf > dup_B.vcf
+bgzip dup_A.vcf && tabix -p vcf dup_A.vcf.gz
+bgzip dup_B.vcf && tabix -p vcf dup_B.vcf.gz
+bcftools stats --samples-file shared.samples dup_A.vcf.gz dup_B.vcf.gz > dup_stats
+grep -A 3147 "Genotype concordance by sample (SNPs)" dup_stats > dup_Geno_concord
+tail -n+3 dup_Geno_concord | cut -f11 | awk '{a+=1;b+=$1}END{print b/a}' ## 0.954574
+
+echo "CHROM POS ID1 NS1 MAF1 AC_Het1 AC_Hom1 ExcHet1" | tr ' '  '\t' > dup_A.info
+cat dup_A.vcf | bcftools +fill-tags | bcftools query -f'%CHROM\t%POS\t%ID\t%NS\t%MAF\t%AC_Het\t%AC_Hom\t%ExcHet\n' >> dup_A.info
+echo "CHROM POS ID2 NS2 MAF2 AC_Het2 AC_Hom2 ExcHet2" | tr ' '  '\t' > dup_B.info
+cat dup_B.vcf | bcftools +fill-tags | bcftools query -f'%CHROM\t%POS\t%ID\t%NS\t%MAF\t%AC_Het\t%AC_Hom\t%ExcHet\n' >> dup_B.info
+
+paste dup_A.info dup_B.info | awk -F"\t" '{if($2!=$10)print}' ## safe to paste
+paste dup_A.info dup_B.info | cut -f1-8,11-16 > dup_AvsB.info
+#head dup_AvsB.info
+#grep Affx-205694835 output/setA/export/AxiomGT1.vcf | tr '\t' '\n' > 1.temp
+#grep Affx-205694835 output/setB/export/AxiomGT1.vcf | tr '\t' '\n' > 2.temp
+#grep "^#CHROM" output/setA/export/AxiomGT1.vcf | tr '\t' '\n' > 1n.temp
+#grep "^#CHROM" output/setB/export/AxiomGT1.vcf | tr '\t' '\n' > 2n.temp
+#cat 2n.temp | grep -Fwf - <(paste 1n.temp 1.temp) > 1nc.temp
+#cat 1n.temp | grep -Fwf - <(paste 2n.temp 2.temp) > 2nc.temp
+#paste 1nc.temp 2nc.temp  | awk '{if($1!=$3)print}'
+#paste 1nc.temp 2nc.temp  | awk '{if($2!=$4)print}' | grep -v "\./\."
+tail -n+2 dup_B.info | awk -F"\t" '{print $3}' > pos_dupAcrossArr_ToExclude.lst
+cat pos_dupAcrossArr_ToExclude.lst | grep -vFwf - output/setB/export/AxiomGT1v2.hiQ2.vcf > output/setB/export/AxiomGT1v2.hiQ3.vcf
+
+## prep final array files to final merge
+bgzip output/setA/export/AxiomGT1v2.hiQ2.vcf && tabix -p vcf output/setA/export/AxiomGT1v2.hiQ2.vcf.gz
+bgzip output/setB/export/AxiomGT1v2.hiQ3.vcf && tabix -p vcf output/setB/export/AxiomGT1v2.hiQ3.vcf.gz
+
+bcftools view --samples-file shared.samples output/setA/export/AxiomGT1v2.hiQ2.vcf.gz | bgzip -c > output/setA/export/AxiomGT1v2.shared.vcf.gz
+tabix -p vcf output/setA/export/AxiomGT1v2.shared.vcf.gz
+bcftools view --samples-file shared.samples output/setB/export/AxiomGT1v2.hiQ3.vcf.gz | bgzip -c > output/setB/export/AxiomGT1v2.shared.vcf.gz
+tabix -p vcf output/setB/export/AxiomGT1v2.shared.vcf.gz
+
+bcftools view --samples-file Aonly.samples output/setA/export/AxiomGT1v2.hiQ2.vcf.gz | bgzip -c > output/setA/export/AxiomGT1v2.Aonly.vcf.gz
+tabix -p vcf output/setA/export/AxiomGT1v2.Aonly.vcf.gz
+bcftools view --samples-file Bonly.samples output/setB/export/AxiomGT1v2.hiQ3.vcf.gz | bgzip -c > output/setB/export/AxiomGT1v2.Bonly.vcf.gz
+tabix -p vcf output/setB/export/AxiomGT1v2.Bonly.vcf.gz
+
+
+bcftools concat --allow-overlaps output/setA/export/AxiomGT1v2.shared.vcf.gz output/setB/export/AxiomGT1v2.shared.vcf.gz | bgzip -c > AxiomGT1v2.merge.vcf.gz
+tabix -p vcf AxiomGT1v2.merge.vcf.gz
+
+bcftools norm -c ws -f $canFam3_ref_unwrap AxiomGT1v2.merge.vcf.gz 1> AxiomGT1v2.merge.check.vcf 2> AxiomGT1v2.merge.check.log
+rm AxiomGT1v2.merge.check.vcf
+#Lines   total/split/realigned/skipped:  913936/0/0/0
+#REF/ALT total/modified/added:   913936/0/0
+
+bcftools merge -m none AxiomGT1v2.merge.vcf.gz output/setA/export/AxiomGT1v2.Aonly.vcf.gz output/setB/export/AxiomGT1v2.Bonly.vcf.gz | bcftools +fill-tags | bgzip -c > AxiomGT1v2.merge2.vcf.gz
+tabix -p vcf AxiomGT1v2.merge2.vcf.gz
+
+
+## Transform all files to map/ped
+#zcat AxiomGT1v2.merge.vcf.gz | grep -v "^#" | awk '{print $1}' | uniq
+plink --vcf AxiomGT1v2.merge.vcf.gz --double-id --chr-set 38 no-y no-xy --allow-extra-chr --allow-no-sex --make-bed --out "AxiomGT1v2.merge"
+# Total genotyping rate is 0.997573.
+# 913936 variants and 3146 samples pass filters and QC.
+
+## Calc of IBS distance for pruning of sample duplicates
+## I am generating a distance matrix using --distance but we can not run this on all variants therefore I am filtrating on low --geno cutoff
+plink --bfile AxiomGT1v2.merge --distance square allele-ct ibs 1-ibs --chr-set 38 no-y no-xy --allow-extra-chr --allow-no-sex --geno 0.01 --out AxiomGT1v2.merge.distance
+# 42981 variants removed due to missing genotype data (--geno).
+# 870955 variants and 3146 samples pass filters and QC.
+# Excluding 28183 variants on non-autosomes from distance matrix calc.
+
+# tranform the distance matrix into one colum
+cat AxiomGT1v2.merge.distance.mibs | awk 'BEGIN{FS="\t";OFS="\n";}{for (i = 1; i <= NF; i++)print $i}' > temp.gen.1
+# Prep the ids
+awk 'BEGIN{OFS="\t"}FNR==NR{a[FNR]=$1;next}{for (i in a)print $1,a[i]}'  <(cat AxiomGT1v2.merge.distance.mdist.id | tr '\t' '.') <(cat AxiomGT1v2.merge.distance.mdist.id | tr '\t' '.') > temp.gen.2
+# create a pairwise table for significantly similar samples
+paste temp.gen.2 temp.gen.1 | awk 'BEGIN{FS=OFS="\t"}{if($3>0.95 && $1!=$2)print}' > ibs.gen.95_temp
+cat ibs.gen.95_temp | awk 'BEGIN{FS=OFS="\t"}{if(!a[$2"."$1] && $3!="nan"){a[$1"."$2]=1;print}}' > ibs.gen.95 ## all replicats are found except S027376
+# paste temp.gen.2 temp.gen.1 | grep S027376_1 | grep S027376_2 ## 0.850015
+
+# generate a histogram
+awk -v size=0.02 'BEGIN{bmin=bmax=0}{ b=int($1/size); a[b]++; bmax=b>bmax?b:bmax; bmin=b<bmin?b:bmin } END { for(i=bmin;i<=bmax;++i) print i*size,(i+1)*size,a[i]/2 }' <(paste temp.gen.2 temp.gen.1 | awk 'BEGIN{FS=OFS="\t"}{if($1!=$2 && $3!="nan")print $3}') > AxiomGT1v2.merge.distance.mibs.2per.hist
+awk -v size=0.01 'BEGIN{bmin=bmax=0}{ b=int($1/size); a[b]++; bmax=b>bmax?b:bmax; bmin=b<bmin?b:bmin } END { for(i=bmin;i<=bmax;++i) print i*size,(i+1)*size,a[i]/2 }' <(paste temp.gen.2 temp.gen.1 | awk 'BEGIN{FS=OFS="\t"}{if($1!=$2 && $3!="nan")print $3}') > AxiomGT1v2.merge.distance.mibs.1per.hist
