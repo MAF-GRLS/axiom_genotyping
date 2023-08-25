@@ -68,7 +68,19 @@ grep 062_C03 <(ls -1 CEL_Files/Array_B/*.CEL) ## it has only one version so I wi
 mv CEL_Files/Array_B/a550772-4435950-041523-658_E07_2.CEL CEL_Files/Array_B/a550772-4435950-041523-658_E07.CEL
 mv CEL_Files/Array_B/a550772-4435952-041623-062_C03_2.CEL CEL_Files/Array_B/a550772-4435952-041623-062_C03.CEL
 
+## Add the pilot data
+gsutil -m cp -r "gs://pilot-180-genotype/original-zip-files/" .
+mkdir -p original-zip-files/{Array_A,Array_B}
+mv original-zip-files/{a550771-4409629-062221-343.zip,a550771-4409629-062221-344.zip} original-zip-files/Array_A/.
+mv original-zip-files/{a550772-4409630-070221-050.zip,a550772-4409630-070221-051.zip} original-zip-files/Array_B/.
 
+
+cd $work_dir/original-zip-files/Array_A/
+unzip a550771-4409629-062221-343.zip
+unzip a550771-4409629-062221-344.zip
+cd $work_dir/original-zip-files/Array_B/
+unzip a550772-4409630-070221-050.zip
+unzip a550772-4409630-070221-051.zip
 
 ## download support file (Analysis library files)
 mkdir -p $work_dir/lib/{setA,setB}
@@ -105,6 +117,29 @@ unzip TFS-Assets_LSG_Support-Files_Axiom_K9HDSNPB_Annotation.r1_3.bed.zip
 # 4) Current NetAffx Annotation Files: Axiom_K9HDSNPB Annotations, SQLite Format, r1
 # local: scp Axiom_K9HDSNPB_Annotation.r1_3.db.zip tahmed@farm.cse.ucdavis.edu:/home/tahmed/MAF/lib/setB/.
 unzip Axiom_K9HDSNPB_Annotation.r1_3.db.zip
+
+
+## download NEW support file (Analysis library files). We got directly from Thermo
+module load rclone
+mkdir -p $work_dir/lib2/{setA,setB}
+rclone -v --copy-links copy remote_UCDavis_GoogleDr:MAF/New_axiom_files/Axiom_K9HDSNPA_Analysis.r2.zip /home/tahmed/MAF/lib2/setA/
+rclone -v --copy-links copy remote_UCDavis_GoogleDr:MAF/New_axiom_files/Axiom_K9HDSNPA.na35.r2.a4.annot.db /home/tahmed/MAF/lib2/setA/
+
+rclone -v --copy-links copy remote_UCDavis_GoogleDr:MAF/New_axiom_files/Axiom_K9HDSNPB_Analysis.r2.zip /home/tahmed/MAF/lib2/setB/
+rclone -v --copy-links copy remote_UCDavis_GoogleDr:MAF/New_axiom_files/Axiom_K9HDSNPB.na35.r2.a4.annot.db /home/tahmed/MAF/lib2/setB/
+
+
+mamba create -n sqlite -c conda-forge sqlite
+conda activate sqlite
+## list the tables
+sqlite3 $work_dir/lib2/setA/Axiom_K9HDSNPA.na35.r2.a4.annot.db ".tables"
+#Annotations     CdfInformation  Chromosome      Information     Localization
+
+
+## Extract traget tables
+cd $work_dir/lib2/setA
+sqlite3 -header -csv Axiom_K9HDSNPA.na35.r2.a4.annot.db "SELECT * FROM Annotations;" > Axiom_K9HDSNPA_Annotation.r2_3.csv
+
 
 ####
 ## Pedigree ped files were obtained from Slack. Therefore, I had to download locally then upload to the server
@@ -160,6 +195,25 @@ diff a2.txt b2.txt
 rm a2.txt b2.txt
 awk 'BEGIN{FS=OFS="\t"}FNR==NR{a[$3]=$2;next}{if(a[$3]!=$2)print $3,a[$3],$2}' sample_ped_infoA_cohort.txt sample_ped_infoB_cohort.txt
 
+## Family IDs are either “GRLS or Oldies”. We have 2968 GRLS & 200 Oldies in both Arrays. Each sample – as expected – has the same Family ID in both files except for 14 samples that seem to be switched. The meta-data files were updated based on the provided correct IDs
+mv sample_ped_infoA_cohort.txt sample_ped_infoA_cohort.txt_wrongFamIDs
+echo "040039 GRLS Oldies
+040236 GRLS Oldies
+040176 GRLS Oldies
+040082 GRLS Oldies
+040052 GRLS Oldies
+040006 GRLS Oldies
+040089 GRLS Oldies
+003430 Oldies GRLS
+000686 Oldies GRLS
+015509 Oldies GRLS
+030301 Oldies GRLS
+033913 Oldies GRLS
+030026 Oldies GRLS
+004582 Oldies GRLS" | tr ' ' '\t' > famIDs_correct
+awk 'BEGIN{FS=OFS="\t"}FNR==NR{a[$1]=$2;b[$1]=$3;next}{if(a[$3]&&a[$3]==$2)$2=b[$3];print}' famIDs_correct sample_ped_infoA_cohort.txt_wrongFamIDs > sample_ped_infoA_cohort.txt
+
+
 ## find sample name duplicates (We can use any one of the arrays ped files)
 tail -n+2 sample_ped_infoA_cohort.txt | cut -f3 | cut -d"_" -f1 | sort | uniq -c | awk '{if($1>1)print $2}' | while read f;do echo $(grep "$f" sample_ped_infoA_cohort.txt | awk -F"\t" '{print "S"$3}' | tr '\n' '\t');done > sample_dup.txt
 
@@ -168,6 +222,70 @@ awk 'BEGIN{FS=OFS="\t"}FNR==NR{a[$3]=$6;next}{print $3,a[$3],$6}' sample_ped_inf
 tail -n+2 gender_compare.txt | awk 'BEGIN{FS=OFS="\t"}{if($2!=$3)print}'
 tail -n+2 gender_compare.txt | cut -f2 | sort | uniq -c  ##    1575 1(male) // 1587 2(female) // 6 -9(unknown)
 
+####
+## Pedigree ped files for pilot data. Also, obtained from Brenna. Therefore, I had to download locally then upload to the server
+mkdir -p $work_dir/ped_pilot && cd $work_dir/ped_pilot
+# local: scp sample_ped_infoA.txt tahmed@farm.cse.ucdavis.edu:/home/tahmed/MAF/ped_pilot/.
+# local: scp sample_ped_infoB.txt tahmed@farm.cse.ucdavis.edu:/home/tahmed/MAF/ped_pilot/.
+
+## Explore the files
+tail -n+2 sample_ped_infoA.txt | cut -f2 | sort | uniq -c  ## 192 PILOT_A
+tail -n+2 sample_ped_infoB.txt | cut -f2 | sort | uniq -c  ## 192 PILOT_B
+
+tail -n+2 sample_ped_infoA.txt | cut -f3 | sed 's/.*-//' | sort > tempA_ids
+tail -n+2 sample_ped_infoB.txt | cut -f3 | sed 's/.*-//' | sort > tempB_ids
+cat tempA_ids | uniq > tempA_uids
+cat tempB_ids | uniq > tempB_uids
+wc -l temp*ids ## No replicate IDs
+#    192 tempA_ids
+#    192 tempA_uids
+#    192 tempB_ids
+#    192 tempB_uids
+comm -12 tempA_uids tempB_uids | wc -l #    192
+
+## Check for replicate IDs with the full cohort
+cat <(tail -n+2 ../pedigree/sample_ped_infoA_cohort.txt) <(tail -n+2 sample_ped_infoA_cohort.txt) | cut -f3 | sort | uniq -c | sort -k1,1nr | head
+
+
+## unify the family ids & update sample “003698”
+cat sample_ped_infoA.txt | sed 's/PILOT_A/PILOT/' | sed 's/003698/003698_pilot/' > sample_ped_infoA_cohort.txt
+cat sample_ped_infoB.txt | sed 's/PILOT_B/PILOT/' | sed 's/003698/003698_pilot/' > sample_ped_infoB_cohort.txt
+
+## confirm the 2 files are matched
+cat sample_ped_infoA_cohort.txt | cut -f3 | sort > a3.txt
+cat sample_ped_infoB_cohort.txt | cut -f3 | sort > b3.txt
+diff a3.txt b3.txt
+rm a3.txt b3.txt
+
+cat sample_ped_infoA_cohort.txt | cut -f2,3 | sort > a2.txt
+cat sample_ped_infoB_cohort.txt | cut -f2,3 | sort > b2.txt
+diff a2.txt b2.txt
+rm a2.txt b2.txt
+awk 'BEGIN{FS=OFS="\t"}FNR==NR{a[$3]=$2;next}{if(a[$3]!=$2)print $3,a[$3],$2}' sample_ped_infoA_cohort.txt sample_ped_infoB_cohort.txt
+
+## find sample name duplicates (We can use any one of the arrays ped files)
+tail -n+2 sample_ped_infoA_cohort.txt | cut -f3 | sed 's/A//;s/B//;' | sort | uniq -c | awk '{if($1>1)print $2}' | while read f;do echo $(grep "$f" sample_ped_infoA_cohort.txt | awk -F"\t" '{print "S"$3}' | tr '\n' '\t');done > sample_dup.txt ## 12
+
+## compare gender across info files
+awk 'BEGIN{FS=OFS="\t"}FNR==NR{a[$3]=$6;next}{print $3,a[$3],$6}' sample_ped_infoA_cohort.txt sample_ped_infoB_cohort.txt | sed 's/Sex/sexA/' | sed 's/Sex/sexB/' > gender_compare.txt
+tail -n+2 gender_compare.txt | awk 'BEGIN{FS=OFS="\t"}{if($2!=$3)print}'
+tail -n+2 gender_compare.txt | cut -f2 | sort | uniq -c  ## 105 1(male) // 87 2(female)
+
+## Merge full cohort and pilot datasets
+mkdir -p $work_dir/All_CEL_Files/{Array_A,Array_B}
+cd $work_dir/All_CEL_Files/Array_A
+ln -s $work_dir/CEL_Files/Array_A/*.CEL .
+ln -s $work_dir/original-zip-files/Array_A/*.CEL .
+cd $work_dir/All_CEL_Files/Array_B
+ln -s $work_dir/CEL_Files/Array_B/*.CEL .
+ln -s $work_dir/original-zip-files/Array_B/*.CEL .
+
+mkdir -p $work_dir/All_pedigree
+cat $work_dir/pedigree/sample_ped_infoA_cohort.txt > $work_dir/All_pedigree/sample_ped_infoA_cohort.txt
+tail -n+2 $work_dir/ped_pilot/sample_ped_infoA_cohort.txt >> $work_dir/All_pedigree/sample_ped_infoA_cohort.txt
+
+cat $work_dir/pedigree/sample_ped_infoB_cohort.txt > $work_dir/All_pedigree/sample_ped_infoB_cohort.txt
+tail -n+2 $work_dir/ped_pilot/sample_ped_infoB_cohort.txt >> $work_dir/All_pedigree/sample_ped_infoB_cohort.txt
 ########
 ## Currently this section is NOT IN USE
 ## prep the inbred file
@@ -211,7 +329,7 @@ unzip SNPolisher_3.0.zip  ## The folder has the manual pdf
 ##########
 ## Define working Paths then run the Best Practice analysis once for Array A then again for Array B
 ## Array_A
-cel_PATH=$work_dir/"CEL_Files/Array_A"
+cel_PATH=$work_dir/"All_CEL_Files/Array_A"
 set_Analysis=$work_dir/"lib/setA/setA_Analysis/"
 set_output=$work_dir/"output/setA"
 qc_xml="$set_Analysis"/Axiom_K9HDSNPA.r1.apt-geno-qc.AxiomQC1.xml
@@ -355,7 +473,7 @@ $apt/ps-classification\
     --output-dir "$set_output"/SNPolisher \
     --ps2snp-file "$ps2snp"
 
-## Array_A ## 401494 output/setA/SNPolisher/Recommended.ps
+## Array_A ## 401504 output/setA/SNPolisher/Recommended.ps
 ## Array_B ## 548289 output/setB/SNPolisher/Recommended.ps
 
 ## Export
@@ -380,7 +498,7 @@ grep -v "^#" $set_output/export/AxiomGT1.vcf | wc -l  ## 401493 // 548288
 
 cd "$set_output"/export/
 ## QC for SNPs without ref/alt
-## extract all SNPs without ref/alt & select those among recommended ## column 19 = "Ref Allele"
+## extract all SNPs without ref/alt & select those among recommended
 #grep -v "^#" $annot_csv | sed 's/^"//;s/\",\"/|/g;s/"$//;' | awk -F"|" '{if($19=="---")print}' > noREF.csv
 grep -Fwf "$set_output"/SNPolisher/Recommended.ps <(grep -v "^#" $annot_csv | sed 's/^"//;s/\",\"/|/g;s/"$//;' | awk -F"|" '{if($19=="---")print}') > noREF_rec.csv #1409 // 0
 rclone -v --copy-links copy noREF_rec.csv remote_UCDavis_GoogleDr:MAF/genotyping_array ## Thermo
